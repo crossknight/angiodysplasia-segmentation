@@ -1,7 +1,7 @@
 import argparse
 import json
 from pathlib import Path
-from validation import validation_binary
+from validation import validation_binary, multi_validation_binary
 import torch
 from torch import nn
 from torch.optim import Adam
@@ -9,9 +9,9 @@ from torch.utils.data import DataLoader
 import torch.backends.cudnn as cudnn
 import torch.backends.cudnn
 
-from models import UNet, UNet11, UNet16, LinkNet34, AlbuNet34
-from loss import LossBinary
-from dataset import AngyodysplasiaDataset
+from models import UNet, UNet11, UNet16, AlbuNet34, SEAlbuNet34, MultiSEAlbuNet34
+from loss import LossBinary, MultiLossBinary
+from dataset import AngyodysplasiaDataset, MultiAngyodysplasiaDataset
 import utils
 
 from prepare_train_val import get_split
@@ -38,7 +38,8 @@ def main():
     arg('--n-epochs', type=int, default=100)
     arg('--lr', type=float, default=0.0001)
     arg('--workers', type=int, default=12)
-    arg('--model', type=str, default='UNet', choices=['UNet', 'UNet11', 'LinkNet34', 'UNet16', 'AlbuNet34'])
+    arg('--multiple-output', type=bool, default=False)
+    arg('--model', type=str, default='UNet', choices=['UNet', 'UNet11', 'LinkNet34', 'UNet16', 'AlbuNet34', 'SEAlbuNet', 'MultiSEAlbuNet'])
 
     args = parser.parse_args()
 
@@ -56,6 +57,10 @@ def main():
         model = LinkNet34(num_classes=num_classes, pretrained=True)
     elif args.model == 'AlbuNet':
         model = AlbuNet34(num_classes=num_classes, pretrained=True)
+    elif args.model == 'SEAlbuNet':
+        model = SEAlbuNet34(num_classes=num_classes, pretrained=True)
+    elif args.model == 'MultiSEAlbuNet':
+        model = MultiSEAlbuNet34(num_classes=num_classes, pretrained=True)
     else:
         model = UNet(num_classes=num_classes, input_channels=3)
 
@@ -66,18 +71,30 @@ def main():
             device_ids = None
         model = nn.DataParallel(model, device_ids=device_ids).cuda()
 
-    loss = LossBinary(jaccard_weight=args.jaccard_weight)
+    if args.multiple_output == False:
+        loss = LossBinary(jaccard_weight=args.jaccard_weight)
+    else:
+        loss = MultiLossBinary(jaccard_weight=args.jaccard_weight)
 
     cudnn.benchmark = True
 
     def make_loader(file_names, shuffle=False, transform=None, limit=None):
-        return DataLoader(
-            dataset=AngyodysplasiaDataset(file_names, transform=transform, limit=limit),
-            shuffle=shuffle,
-            num_workers=args.workers,
-            batch_size=args.batch_size,
-            pin_memory=torch.cuda.is_available()
-        )
+        if args.multiple_output == False:
+            return DataLoader(
+                dataset=AngyodysplasiaDataset(file_names, transform=transform, limit=limit),
+                shuffle=shuffle,
+                num_workers=args.workers,
+                batch_size=args.batch_size,
+                pin_memory=torch.cuda.is_available()
+            )
+        else:
+             return DataLoader(
+                dataset=MultiAngyodysplasiaDataset(file_names, transform=transform, limit=limit),
+                shuffle=shuffle,
+                num_workers=args.workers,
+                batch_size=args.batch_size,
+                pin_memory=torch.cuda.is_available()
+            )
 
     train_file_names, val_file_names = get_split(args.fold)
 
@@ -103,16 +120,28 @@ def main():
     root.joinpath('params.json').write_text(
         json.dumps(vars(args), indent=True, sort_keys=True))
 
-    utils.train(
-        init_optimizer=lambda lr: Adam(model.parameters(), lr=lr),
-        args=args,
-        model=model,
-        criterion=loss,
-        train_loader=train_loader,
-        valid_loader=valid_loader,
-        validation=validation_binary,
-        fold=args.fold
-    )
+    if args.multiple_output == False:
+        utils.train(
+            init_optimizer=lambda lr: Adam(model.parameters(), lr=lr),
+            args=args,
+            model=model,
+            criterion=loss,
+            train_loader=train_loader,
+            valid_loader=valid_loader,
+            validation=validation_binary,
+            fold=args.fold
+        )
+    else:
+        utils.train_multi(
+            init_optimizer=lambda lr: Adam(model.parameters(), lr=lr),
+            args=args,
+            model=model,
+            criterion=loss,
+            train_loader=train_loader,
+            valid_loader=valid_loader,
+            validation=multi_validation_binary,
+            fold=args.fold
+        )
 
 
 if __name__ == '__main__':
